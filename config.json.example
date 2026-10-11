@@ -3,7 +3,7 @@
     "enabled": true
   },
   "cleanup": {
-    "deleteSessionFiles": false
+    "deleteSessionFiles": true
   },
   "models": {
     "agents": {}

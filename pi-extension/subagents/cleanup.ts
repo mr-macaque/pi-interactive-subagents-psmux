@@ -6,16 +6,16 @@ import { getSessionId, loadoutSidecarPath } from "./session.ts";
 export interface CleanupConfig { deleteSessionFiles: boolean }
 export function loadCleanupConfig(): CleanupConfig {
   const file = readSubagentConfigFile();
-  if (!file) return { deleteSessionFiles: false };
+  if (!file) return { deleteSessionFiles: true };
   return parseCleanupConfig(parseSubagentConfigJson(file.rawConfig, file.sourcePath), file.sourcePath);
 }
 export function parseCleanupConfig(raw: unknown, source = "subagents.json"): CleanupConfig {
   const guard = createSubagentConfigGuard(source);
   const root = guard.requireObject(raw, "root");
-  if (root.cleanup === undefined) return { deleteSessionFiles: false };
+  if (root.cleanup === undefined) return { deleteSessionFiles: true };
   const cleanup = guard.requireObject(root.cleanup, "cleanup");
   guard.rejectUnsupportedKeys(cleanup, ["deleteSessionFiles"], "cleanup");
-  return { deleteSessionFiles: cleanup.deleteSessionFiles === undefined ? false : guard.requireBoolean(cleanup.deleteSessionFiles, "cleanup.deleteSessionFiles") };
+  return { deleteSessionFiles: cleanup.deleteSessionFiles === undefined ? true : guard.requireBoolean(cleanup.deleteSessionFiles, "cleanup.deleteSessionFiles") };
 }
 
 /** Only a closed, owned child's exact session, sidecar and private artifacts. */

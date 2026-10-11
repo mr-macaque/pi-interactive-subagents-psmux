@@ -113,8 +113,8 @@ async function waitFor(predicate: () => boolean | Promise<boolean>) {
   }
 }
 
-it("launches concurrent agents, reports once, retires handles and allows fresh names",  async () => {
-  const h = await setup();
+it("launches concurrent agents, retires handles and retains files with deletion disabled", async () => {
+  const h = await setup({ deleteSessionFiles: false });
   try {
     const [a, b] = await Promise.all([
       h.execute("subagent", { agent: "scout", task: "COMPLETE first" }),
@@ -125,7 +125,7 @@ it("launches concurrent agents, reports once, retires handles and allows fresh n
     await waitFor(() => h.results.length === 2);
     assert.ok(h.results.every((r) => r.details.phase === "completed"));
     assert.ok(existsSync(a.details.sessionFile + ".loadout.json"));
-    assert.ok(existsSync(a.details.sessionFile), "saved files are retained by default");
+    assert.ok(existsSync(a.details.sessionFile), "saved files are retained with an explicit opt-out");
     const launch = h.launches[0];
     assert.ok(launch.args.includes("--no-extensions"));
     assert.ok(launch.args.includes("--no-mcp"));
@@ -141,8 +141,8 @@ it("launches concurrent agents, reports once, retires handles and allows fresh n
   } finally { await h.shutdown(); }
 });
 
-it("optionally deletes child files only after preserving the delivered result", async () => {
-  const h = await setup({ deleteSessionFiles: true });
+it("deletes child files by default only after preserving the delivered result", async () => {
+  const h = await setup();
   try {
     const child = await h.execute("subagent", { agent: "scout", name: "ephemeral", task: "HOLD" });
     const file = child.details.sessionFile;

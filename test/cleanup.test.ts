@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { deleteChildFiles, parseCleanupConfig } from "../pi-extension/subagents/cleanup.ts";
 import { registerName, unregisterName, readNameRegistry } from "../pi-extension/subagents/session.ts";
 
-it("validates opt-in deletion without changing model/status settings", () => {
-  assert.deepEqual(parseCleanupConfig({}), { deleteSessionFiles: false });
-  assert.deepEqual(parseCleanupConfig({ cleanup: {} }), { deleteSessionFiles: false });
+it("defaults to deletion and validates opt-out without changing model/status settings",  () => {
+  assert.deepEqual(parseCleanupConfig({}), { deleteSessionFiles: true });
+  assert.deepEqual(parseCleanupConfig({ cleanup: {} }), { deleteSessionFiles: true });
+  assert.deepEqual(parseCleanupConfig({ cleanup: { deleteSessionFiles: false } }), { deleteSessionFiles: false });
   assert.deepEqual(parseCleanupConfig({ status: { enabled: false }, models: {}, cleanup: { deleteSessionFiles: true } }), { deleteSessionFiles: true });
   assert.throws(() => parseCleanupConfig({ cleanup: { deleteSessionFiles: "yes" } }), /boolean/);
   assert.throws(() => parseCleanupConfig({ cleanup: { unknown: true } }), /unsupported/i);

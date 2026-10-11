@@ -54,7 +54,7 @@ Every conversation uses the same fullscreen view and **Return to main agent** al
 - Recoverable tool failures, provider retry attempts, compaction errors, and child extension diagnostics stay inside the child. They neither dismiss its view nor create main-chat/context messages. Successful recovery produces only the final result.
 - A terminal child failure returns to main and reports once as plain red **Error:** text; it does not also send a duplicate result. Terminal failures remain available to the delegating agent. Legacy `subagent_error` messages without terminal-failure metadata are excluded from future orchestrator context, without deleting saved history.
 - Viewer/dialog/control failures restore the main UI and show a plain red error notification through non-context custom session entries, not `sendMessage()`.
-- Closed descendants are retired from the hierarchy too. Their saved files are retained by default; only their owning process may perform opt-in file deletion.
+- Closed descendants are retired from the hierarchy too. Their saved files are deleted by default; only their owning process performs file deletion. Set `cleanup.deleteSessionFiles: false` to retain them.
 
 Mouse interaction is supported by Pi's fullscreen mode. Keyboard navigation also works in regular mode. Tool images follow Pi's native terminal-capability and image settings. The only extension-specific conversation decoration is the blue subagent information/return block.
 
@@ -72,7 +72,7 @@ Only these extension-generated messages go to the **delegating agent's** model c
 
 Streaming text, thinking, child tool arguments/results, retry diagnostics, widget updates, dialogs, usage statistics, and navigation do not get copied into main context. The root can display descendant results/questions/failures, but those are non-context `subagent_ui` session entries; the descendant's actual owner receives its model-facing notification. Message `details` (session paths, stats, ownership metadata) are not included in Pi's LLM conversion of custom messages.
 
-Legacy internal-error and duplicate descendant notifications are filtered before normal model requests, compaction, and branch summaries. Context filtering does not rewrite saved history. Optional lifecycle cleanup can delete closed children's files, but never the parent conversation. Previously generated compaction summaries or observations may already contain old diagnostics; this cannot be safely reversed by a message filter. Third-party extensions that independently summarize raw saved entries must honor the same non-context boundary themselves.
+Legacy internal-error and duplicate descendant notifications are filtered before normal model requests, compaction, and branch summaries. Context filtering does not rewrite saved history. Lifecycle cleanup deletes closed children's files by default, but never the parent conversation. Previously generated compaction summaries or observations may already contain old diagnostics; this cannot be safely reversed by a message filter. Third-party extensions that independently summarize raw saved entries must honor the same non-context boundary themselves.
 
 ### Native rendering and layout extensions
 
@@ -178,7 +178,7 @@ Selections are stored in `<Pi agent directory>/subagents.json`, respecting `PI_C
 ```json
 {
   "status": { "enabled": true },
-  "cleanup": { "deleteSessionFiles": false },
+  "cleanup": { "deleteSessionFiles": true },
   "models": {
     "default": "inherit",
     "thinking": "medium",
@@ -203,7 +203,7 @@ Completion waits for **agent_settled**, not `agent_end`, because retries, compac
 
 After a child's process has closed and its final outcome is queued to its parent, it is removed from memory, the selector, the session list and the name registry. Completion, cancellation and terminal failure all retire the handle; names can be reused for fresh sessions. Final summaries and statistics remain in the parent's conversation. Live children waiting for answers or nested work are not retired. `auto-exit: false` sessions remain live until explicitly stopped.
 
-By default saved child sessions/loadouts/artifacts remain on disk for manual inspection, but do not appear in `/subagents` and cannot be resumed through `subagent_message`. Set `cleanup.deleteSessionFiles: true` in `subagents.json` to delete newly retired, owned children's session files, loadouts, private session-artifact directories and generated profile-prompt files. Project files, parent history and sibling sessions are never cleanup targets. Observer copies only retire their local handles; the child's real owner manages file deletion.
+By default, newly retired, owned children's session files, loadouts, private session-artifact directories and generated profile-prompt files are deleted (`cleanup.deleteSessionFiles: true`, also when the setting is absent). Their saved chats consequently leave Pi's native `/resume` picker. Set `cleanup.deleteSessionFiles: false` in `subagents.json` to retain files for manual inspection; closed handles still do not appear in `/subagents` and cannot be resumed through `subagent_message`. Project files, parent history and sibling sessions are never cleanup targets. Observer copies only retire their local handles; the child's real owner manages file deletion.
 
 Shutdown, session replacement, and `/reload` close the selected view, dispose its input listeners, and stop owned background children. No result is sent into a disposed parent session; files are retained on that shutdown path. On restart, legacy saved registry handles are retired without retroactively deleting their files. Cleanup does not rewrite previous results or summaries.
 
