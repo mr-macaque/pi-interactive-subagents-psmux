@@ -1,7 +1,7 @@
 ---
 name: researcher
-description: Web researcher — searches the web and synthesizes findings
-tools: web_search, web_fetch, safe_bash, codemode
+description: Web researcher — searches the web and synthesizes findings.
+tools: web_search, web_fetch, safe_bash
 model: openai/gpt-6-luna
 thinking: medium
 system-prompt: append

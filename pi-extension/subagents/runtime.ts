@@ -33,8 +33,6 @@ export class Subagent extends EventEmitter {
   private activeMessage = -1;
   private waitingAnswer = false;
   private children = 0;
-  private initialMessages: string[] = [];
-  queueInitialMessages(messages: string[]) { this.initialMessages = [...messages]; }
   private finalizing = false;
   private reported = false;
   private cancelled = false;
@@ -71,6 +69,7 @@ export class Subagent extends EventEmitter {
     }
   }
 
+  get awaitingAnswer() { return this.waitingAnswer; }
   get live() { return !!this.rpc && !this.finishedAt && !["completed", "cancelled", "failed"].includes(this.phase); }
   get streamingMessageIndex() { return this.activeMessage; }
   get elapsed() { return Math.floor(((this.finishedAt ?? Date.now()) - this.startedAt) / 1000); }
@@ -197,7 +196,14 @@ export class Subagent extends EventEmitter {
         if (entry?.type === "custom" && !entry.customType?.startsWith("subagent_")) this.messages.push({ role: "customEntry", entry });
         if (entry?.customType === "subagent_question") {
           this.waitingAnswer = true;
+          this.phase = "waiting";
+          this.activity = "awaiting answer";
           this.emit("question", entry.data.question);
+        }
+        if (entry?.customType === "subagent_question_answered") {
+          this.waitingAnswer = false;
+          this.phase = "running";
+          this.activity = "working";
         }
         break;
       }
@@ -209,12 +215,6 @@ export class Subagent extends EventEmitter {
         this.messages.push({ role: "custom", customType: "Extension error", content: event.error || "Unknown extension error", display: true });
         break;
       case "agent_settled":
-        if (!event.aborted && !this.error && !this.waitingAnswer && this.initialMessages.length) {
-          const message = this.initialMessages.shift()!;
-          this.phase = "running"; this.activity = "working";
-          void this.send(message).catch((error) => this.fail(error));
-          break;
-        }
         // agent_end is NOT final: automatic retries and queued prompts may follow it.
         this.emit("settled");
         if (this.rpc?.remote) {
@@ -251,7 +251,6 @@ export class Subagent extends EventEmitter {
     if (this.reported || !this.rpc) return;
     if (this.finalizing) { await this.rpc?.closed; return; }
     this.cancelled = true;
-    this.initialMessages = [];
     this.error = undefined;
     this.finalizing = true;
     this.phase = "cancelled";

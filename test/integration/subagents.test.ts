@@ -2,7 +2,7 @@ import { after, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { PiRpc } from "../../pi-extension/subagents/rpc.ts";
@@ -14,6 +14,7 @@ process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 mkdirSync(join(root, "agent", "agents"), { recursive: true });
 writeFileSync(join(root, "agent", "agents", "branch.md"), "---\nname: branch\nmodel: inherit\ntools: read\nauto-exit: true\nsubagent_agents: branch-mid, scout\n---\nTest branch\n");
 writeFileSync(join(root, "agent", "agents", "branch-mid.md"), "---\nname: branch-mid\nmodel: inherit\ntools: read\nauto-exit: true\nsubagent_agents: scout\n---\nTest middle branch\n");
+writeFileSync(join(root, "agent", "agents", "interactive-worker.md"), "---\nname: interactive-worker\nmodel: inherit\ntools: read\nauto-exit: false\n---\nTest persistent worker\n");
 const { default: extension } = await import("../../pi-extension/subagents/index.ts");
 const fixture = fileURLToPath(new URL("./fixtures/pi-rpc.mjs", import.meta.url));
 after(() => {
@@ -22,29 +23,30 @@ after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-it("keeps the agent-visible spawn/list/steer and task-file handoff contract", async () => {
+it("keeps the hybrid spawn/list/steer and direct RPC task contract", async () => {
   const h = await setup();
   try {
     const listed = await h.execute("subagents_list", {});
-    assert.match(listed.content[0].text, /• scout/);
-    assert.ok(!listed.content[0].text.startsWith("{"));
+    assert.ok(JSON.parse(listed.content[0].text).profiles.some((a: any) => a.name === "scout"));
     const spawned = await h.execute("subagent", { agent: "scout", name: "legacy", task: "HOLD" });
-    assert.match(spawned.content[0].text, /Do NOT generate or assume any results — you have no idea what the sub-agent will do or produce\./);
-    assert.equal(spawned.details.task, "HOLD");
+    assert.match(spawned.content[0].text, /Acknowledgement only; do not assume results or poll/);
+    assert.match(spawned.content[0].text, /Results arrive automatically when it finishes/);
+    assert.equal(spawned.details.name, "legacy");
     const history = await h.processes[0].request("get_messages");
     const prompt = history.messages.find((m: any) => m.role === "user").content;
     const text = typeof prompt === "string" ? prompt : prompt.map((c: any) => c.text ?? "").join("");
-    assert.match(text, /^<file name="[^"]+">\n/);
-    assert.match(text, /Complete your task autonomously\. When you are finished, simply stop — your session ends automatically\./);
-    assert.match(text, /Your FINAL assistant message should summarize what you accomplished\./);
+    assert.match(text, /^Task:\n\nHOLD/);
+    assert.ok(!text.includes("<file name="));
+    assert.match(text, /Stay within the assigned scope/);
+    assert.match(text, /execution pauses until the parent's reply is returned as the tool result/);
     const steered = await h.execute("subagent_message", { name: "legacy", message: "HOLD" });
-    assert.equal(steered.content[0].text, 'Message delivered to running subagent "legacy". It picks this up at its next turn boundary. If it exits, its result still arrives as a steer message.');
-    const missing = await h.execute("subagent_message", { name: "missing", message: "work" });
-    assert.equal(missing.content[0].text, 'No subagent named "missing" in this session. Known subagents: legacy.');
+    assert.match(steered.content[0].text, /Message delivered to live subagent "legacy"/);
+    assert.match(steered.content[0].text, /queued for the next turn boundary, not an interruption/);
+    await assert.rejects(h.execute("subagent_message", { name: "missing", message: "work" }), /No live subagent named "missing"/);
   } finally { await h.shutdown(); }
 });
 
-async function setup() {
+async function setup(cleanupConfig?: { deleteSessionFiles: boolean }) {
   const dir = mkdtempSync(join(root, "parent "));
   const events = new Map<string, any>();
   const tools = new Map<string, any>();
@@ -72,7 +74,7 @@ async function setup() {
     getThinkingLevel: () => "medium",
     sendMessage: (message: any) => results.push(message),
   };
-  extension(api, { createRpc: (args, options) => {
+  extension(api, { cleanupConfig, createRpc: (args, options) => {
     launches.push({ args, options });
     const rpc = new PiRpc(args, options, (_command, rawArgs, opts) => spawn(process.execPath, ["--experimental-transform-types", fixture, ...rawArgs.slice(3)], opts) as any);
     rpc.on("tree", (packet) => packets.push(packet));
@@ -81,7 +83,7 @@ async function setup() {
   } });
   await events.get("session_start")({}, ctx);
   const execute = (name: string, params: any) => tools.get(name).execute("test", params, undefined, undefined, ctx);
-  return { ctx, execute, commands, events, processes, results, entries, launches, packets, widgets, shutdown: () => events.get("session_shutdown")({}, ctx) };
+  return { api, ctx, execute, commands, events, processes, results, entries, launches, packets, widgets, shutdown: () => events.get("session_shutdown")({}, ctx) };
 }
 it("excludes legacy internal diagnostics from orchestrator context but retains terminal failures", async () => {
   const h = await setup();
@@ -103,15 +105,15 @@ it("excludes legacy internal diagnostics from orchestrator context but retains t
   } finally { await h.shutdown(); }
 });
 
-async function waitFor(predicate: () => boolean) {
+async function waitFor(predicate: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 5000;
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() > deadline) throw new Error("Integration test timed out");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
 
-it("launches concurrent agents, reports once, persists and resumes the same session", async () => {
+it("launches concurrent agents, reports once, retires handles and allows fresh names",  async () => {
   const h = await setup();
   try {
     const [a, b] = await Promise.all([
@@ -123,24 +125,101 @@ it("launches concurrent agents, reports once, persists and resumes the same sess
     await waitFor(() => h.results.length === 2);
     assert.ok(h.results.every((r) => r.details.phase === "completed"));
     assert.ok(existsSync(a.details.sessionFile + ".loadout.json"));
+    assert.ok(existsSync(a.details.sessionFile), "saved files are retained by default");
     const launch = h.launches[0];
     assert.ok(launch.args.includes("--no-extensions"));
     assert.ok(launch.args.includes("--no-mcp"));
     assert.ok(!launch.args.some((a: string) => a.startsWith("@") || a.includes("__SUBAGENT_DONE")));
-    await h.execute("subagent_message", { name: "scout", message: "COMPLETE follow-up" });
+    assert.equal((await h.execute("subagents_list", {})).details.sessions.length, 0);
+    const registryPath = join(h.ctx.sessionManager.getSessionDir(), "artifacts", "main", "subagent-registry.json");
+    assert.deepEqual(JSON.parse(readFileSync(registryPath, "utf8")), {});
+    await assert.rejects(h.execute("subagent_message", { name: "scout", message: "follow-up" }), /Closed subagents are removed/);
+    const fresh = await h.execute("subagent", { agent: "scout", name: "scout", task: "COMPLETE fresh" });
     await waitFor(() => h.results.length === 3);
-    assert.equal(h.launches[2].args[h.launches[2].args.indexOf("--session") + 1], a.details.sessionFile);
+    assert.notEqual(fresh.details.sessionFile, a.details.sessionFile);
     assert.equal(h.launches[2].args[h.launches[2].args.indexOf("--tools") + 1], "read,grep,find,ls,ask_question");
   } finally { await h.shutdown(); }
 });
 
-it("question flow stays alive, reply completes, and crash restores the selected view", async () => {
+it("optionally deletes child files only after preserving the delivered result", async () => {
+  const h = await setup({ deleteSessionFiles: true });
+  try {
+    const child = await h.execute("subagent", { agent: "scout", name: "ephemeral", task: "HOLD" });
+    const file = child.details.sessionFile;
+    const id = JSON.parse(readFileSync(file, "utf8").split("\n")[0]).id;
+    const artifacts = join(dirname(file), "artifacts", id);
+    mkdirSync(artifacts, { recursive: true });
+    writeFileSync(join(artifacts, "child-only.txt"), "private artifact");
+    writeFileSync(h.ctx.sessionManager.getSessionFile(), "parent history");
+    assert.ok(existsSync(file));
+    await h.execute("subagent_message", { name: "ephemeral", message: "COMPLETE bounded task" });
+    await waitFor(() => h.results.some((r) => r.details?.name === "ephemeral"));
+    const result = h.results.find((r) => r.details?.name === "ephemeral");
+    assert.match(result.content, /Done:/);
+    assert.match(result.content, /Session closed and removed/);
+    assert.equal(h.results.filter((r) => r.details?.name === "ephemeral").length, 1);
+    assert.equal(existsSync(file), false);
+    assert.equal(existsSync(`${file}.loadout.json`), false);
+    assert.equal(existsSync(artifacts), false);
+    assert.equal(readFileSync(h.ctx.sessionManager.getSessionFile(), "utf8"), "parent history");
+    assert.equal((await h.execute("subagents_list", {})).details.sessions.length, 0);
+  } finally { await h.shutdown(); }
+});
+
+it("retains files when the final result cannot be delivered", async () => {
+  const h = await setup({ deleteSessionFiles: true });
+  try {
+    const child = await h.execute("subagent", { agent: "scout", name: "undelivered", task: "HOLD" });
+    h.api.sendMessage = () => { throw new Error("delivery failed"); };
+    await h.execute("subagent_message", { name: "undelivered", message: "COMPLETE work" });
+    await waitFor(() => h.entries.some((e) => e.data?.content?.includes("delivery failed")));
+    assert.ok(existsSync(child.details.sessionFile));
+    assert.ok(existsSync(child.details.sessionFile + ".loadout.json"));
+    assert.equal(h.results.length, 0);
+  } finally { await h.shutdown(); }
+});
+
+it("retires legacy saved handles on restart without deleting old files", async () => {
+  const h = await setup({ deleteSessionFiles: true });
+  try {
+    const file = join(h.ctx.cwd, "legacy.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "session", id: "legacy-id" }) + "\n");
+    const registry = join(h.ctx.cwd, "artifacts", "main", "subagent-registry.json");
+    mkdirSync(dirname(registry), { recursive: true });
+    writeFileSync(registry, JSON.stringify({ legacy: { sessionFile: file, sessionId: "legacy-id" } }));
+    await h.events.get("session_start")({}, h.ctx);
+    assert.ok(existsSync(file));
+    assert.deepEqual(JSON.parse(readFileSync(registry, "utf8")), {});
+    assert.equal((await h.execute("subagents_list", {})).details.sessions.length, 0);
+  } finally { await h.shutdown(); }
+});
+
+it("does not promise per-turn completion for a live non-auto-exiting profile", async () => {
+  const h = await setup();
+  try {
+    const spawned = await h.execute("subagent", { agent: "interactive-worker", name: "persistent", task: "COMPLETE first" });
+    assert.match(spawned.content[0].text, /stays open after each turn/);
+    await waitFor(async () => {
+      const listed = await h.execute("subagents_list", {});
+      return listed.details.sessions.some((s: any) => s.name === "persistent" && s.activity === "ready for a message");
+    });
+    assert.equal(h.results.length, 0);
+    const steered = await h.execute("subagent_message", { name: "persistent", message: "COMPLETE second" });
+    assert.match(steered.content[0].text, /Message delivered to live subagent "persistent"/);
+    assert.match(steered.content[0].text, /no per-turn completion notification is guaranteed/);
+    assert.equal(h.launches.length, 1, "idle live sessions must be steered, not relaunched");
+    assert.equal(h.results.length, 0);
+  } finally { await h.shutdown(); }
+});
+
+it("question flow stays alive, reply completes, and crash restores the selected view",  async () => {
   const h = await setup();
   try {
     await h.execute("subagent", { agent: "scout", task: "ASK which file" });
     await waitFor(() => h.results.some((r) => r.customType === "subagent_question"));
     assert.equal(h.results.filter((r) => r.customType === "subagent_result").length, 0);
-    await h.execute("subagent_message", { name: "scout", message: "COMPLETE a.ts" });
+    const reply = await h.execute("subagent_message", { name: "scout", message: "COMPLETE a.ts" });
+    assert.match(reply.content[0].text, /Reply delivered to "scout"\. Its question is unblocked/);
     await waitFor(() => h.results.some((r) => r.customType === "subagent_result"));
     await h.execute("subagent", { agent: "scout", name: "crasher", task: "HOLD" });
     let component: any;
@@ -161,7 +240,7 @@ it("question flow stays alive, reply completes, and crash restores the selected 
     await waitFor(() => h.results.some((r) => r.details?.name === "crasher"));
     assert.equal(h.results.find((r) => r.details?.name === "crasher").details.phase, "failed");
     assert.equal(h.results.filter((r) => r.details?.name === "crasher").length, 1);
-    assert.equal(h.results.find((r) => r.details?.name === "crasher").customType, "subagent_result");
+    assert.equal(h.results.find((r) => r.details?.name === "crasher").customType, "subagent_error");
   } finally { await h.shutdown(); }
 });
 
@@ -242,7 +321,7 @@ it("opens a grandchild in the root tab, routes messages to it, and delivers comp
     await v.done;
     assert.equal(v.state.returned, 1);
     assert.equal(v.state.consume, undefined);
-    await waitSessions(h, (s) => s.every((a) => a.phase === "completed"));
+    await waitSessions(h, (s) => s.length === 0);
     assert.ok(h.entries.some((r) => r.data?.details?.name === "one/leaf" && r.data?.details?.parent === "one"));
     assert.ok(!h.results.some((r) => r.details?.name === "one/leaf"), "descendant results must not enter root model context");
     await waitFor(() => h.results.some((r) => r.details?.name === "one"));
@@ -282,7 +361,8 @@ it("stopping an ancestor while viewing its grandchild returns immediately and pr
     assert.equal(v.state.returned, 1, "return must not wait for subprocess shutdown");
     await v.done;
     await stopping;
-    await waitSessions(h, (s) => s.find((a) => a.name === "one")?.phase === "cancelled" && s.find((a) => a.name === "one/leaf")?.phase === "cancelled");
+    await waitSessions(h, (s) => !s.some((a) => a.name === "one" || a.name.startsWith("one/")));
+    assert.ok(h.results.some((r) => r.details?.name === "one" && r.details.phase === "cancelled"));
     assert.equal((await h.execute("subagents_list", {})).details.sessions.find((a: any) => a.name === "sibling").phase, "running");
     assert.equal(h.results.filter((r) => r.customType === "subagent_error").length, 0);
   } finally { await h.shutdown(); }
@@ -298,7 +378,8 @@ it("stopping a nested parent routes through its owner and closes the deeper view
     assert.equal(v.state.returned, 1);
     await v.done;
     await stopping;
-    await waitSessions(h, (s) => s.find((a) => a.name === "one/middle")?.phase === "cancelled" && s.find((a) => a.name === "one/middle/leaf")?.phase === "cancelled");
+    await waitSessions(h, (s) => !s.some((a) => a.name === "one/middle" || a.name.startsWith("one/middle/")));
+    assert.ok(h.entries.some((e) => e.data?.details?.name === "one/middle" && e.data.details.phase === "cancelled"));
     assert.equal(h.results.filter((r) => r.customType === "subagent_error").length, 0);
   } finally { await h.shutdown(); }
 });
@@ -316,7 +397,8 @@ it("ancestor crash restores main, reports the error in chat and terminates the o
     await v.done;
     assert.equal(v.state.returned, 1);
     assert.equal(v.state.consume, undefined);
-    await waitSessions(h, (s) => s.find((a) => a.name === "one/leaf")?.phase === "failed");
+    await waitSessions(h, (s) => !s.some((a) => a.name === "one/leaf"));
+    assert.ok(h.entries.some((e) => e.data?.details?.name === "one/leaf" && e.data.details.phase === "failed"));
     await waitFor(() => h.results.some((r) => r.details?.phase === "failed"));
     assert.ok(h.results.some((r) => r.details?.phase === "failed" && r.content.includes("one")));
     await new Promise((resolve) => setTimeout(resolve, 350));
@@ -381,9 +463,7 @@ it("tool validation uses ordinary tool output without extra cards or dismissing 
   try {
     await h.execute("subagent", { agent: "scout", name: "one", task: "HOLD" });
     const v = view(h, "one");
-    const rejected = await h.execute("subagent", { agent: "does-not-exist", task: "test" });
-    assert.equal(rejected.details.error, "unknown agent");
-    assert.match(rejected.content[0].text, /You may not spawn the "does-not-exist" agent/);
+    await assert.rejects(h.execute("subagent", { agent: "does-not-exist", task: "test" }), /Unknown or disallowed agent/);
     assert.equal(v.state.returned, 0);
     assert.equal(h.entries.length, 0);
     assert.equal(h.results.length, 0);
@@ -431,7 +511,8 @@ it("crashing an intermediate ancestor closes the deepest view and cleans its bra
     process.kill(middle.pid);
     await v.done;
     assert.equal(v.state.returned, 1);
-    await waitSessions(h, (s) => s.find((a) => a.name === "one/middle/leaf")?.phase === "failed");
+    await waitSessions(h, (s) => !s.some((a) => a.name === "one/middle/leaf"));
+    assert.ok(h.entries.some((e) => e.data?.details?.name === "one/middle/leaf" && e.data.details.phase === "failed"));
     assert.ok(h.entries.some((r) => r.data?.details?.phase === "failed" && r.data.content.includes("one/middle")));
     await new Promise((resolve) => setTimeout(resolve, 350));
     const heartbeat = readFileSync(leaf.sessionFile + ".heartbeat", "utf8");
@@ -449,7 +530,7 @@ it("unexpected modal creation failure reports an error and releases the waiting 
     h.ctx.ui.custom = async () => { throw new Error("unexpected modal failure"); };
     await h.execute("subagent_message", { name: "one/leaf", message: "DIALOG" });
     await v.done;
-    await waitSessions(h, (s) => s.every((a) => a.phase === "completed"));
+    await waitSessions(h, (s) => s.length === 0);
     assert.equal(v.state.returned, 1);
     assert.ok(h.entries.some((r) => r.data?.customType === "subagent_error" && r.data.content.includes("unexpected modal failure")));
   } finally { await h.shutdown(); }
@@ -460,8 +541,7 @@ it("tool validation leaves an open selector alone and adds no custom main-chat e
   try {
     await h.execute("subagent", { agent: "scout", name: "one", task: "HOLD" });
     const picker = view(h, "");
-    const rejected = await h.execute("subagent", { agent: "invalid-profile", task: "test" });
-    assert.equal(rejected.details.error, "unknown agent");
+    await assert.rejects(h.execute("subagent", { agent: "invalid-profile", task: "test" }), /Unknown or disallowed agent/);
     assert.equal(picker.state.returned, 0);
     assert.equal(h.entries.length, 0);
     picker.state.component.handleInput("\x1b");
@@ -503,7 +583,7 @@ it("keeps the subagent widget stable above observation progress throughout strea
   } finally { await h.shutdown(); }
 });
 
-it("removes finished agents from the main widget while retaining history and resume handles", async () => {
+it("removes finished agents from the widget, selector and session list",  async () => {
   const h = await setup();
   try {
     h.ctx.mode = "tui";
@@ -518,13 +598,10 @@ it("removes finished agents from the main widget while retaining history and res
     await h.execute("subagent_message", { name: "two", message: "COMPLETE two" });
     await waitFor(() => h.results.some((r) => r.details?.name === "two"));
     assert.equal(h.widgets.has("subagent-status"), false);
-    assert.equal((await h.execute("subagents_list", {})).details.sessions.length, 2);
+    assert.equal((await h.execute("subagents_list", {})).details.sessions.length, 0);
     const saved = view(h, "one");
-    assert.equal(saved.state.component.agent.activity, "completed");
-    assert.ok(saved.state.component.render(100).some((line: string) => line.includes("Done:")));
-    saved.state.consume("\x1b");
     await saved.done;
-    await h.execute("subagent_message", { name: "one", message: "HOLD follow-up" });
-    assert.ok(h.widgets.has("subagent-status"), "resuming a saved agent must restore its active row");
+    assert.equal(saved.state.component, undefined, "retired agents cannot be opened");
+    await assert.rejects(h.execute("subagent_message", { name: "one", message: "follow-up" }), /No live subagent/);
   } finally { await h.shutdown(); }
 });

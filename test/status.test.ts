@@ -6,9 +6,9 @@ import { parseSubagentConfig } from "../pi-extension/subagents/config.ts";
 import { StatusMonitor } from "../pi-extension/subagents/status-monitor.ts";
 import { formatAgentRows } from "../pi-extension/subagents/view.ts";
 
-it("retains the Psmux example configuration and status/model defaults", () => {
+it("retains status/model defaults and adds opt-in cleanup to the example",  () => {
   const example = JSON.parse(readFileSync(new URL("../config.json.example", import.meta.url), "utf8"));
-  assert.deepEqual(example, { status: { enabled: true }, models: { agents: {} } });
+  assert.deepEqual(example, { status: { enabled: true }, cleanup: { deleteSessionFiles: false }, models: { agents: {} } });
   assert.deepEqual(parseStatusConfig(example), { enabled: true, lineLimit: 4 });
   assert.deepEqual(parseSubagentConfig(example).models, { agents: {}, validate: true, fallback: "inherit" });
   assert.equal(parseSubagentConfig({ status: { enabled: false } }).models, null);

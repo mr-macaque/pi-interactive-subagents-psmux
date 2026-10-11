@@ -119,11 +119,9 @@ export function readSubagentLoadout(sessionFile: string): SubagentLoadout | null
 // ── Name registry ────────────────────────────────────────────────────────────
 // Each spawner session (the top-level pi session, or a worker that spawns its
 // own children) gets a registry mapping a subagent's display name to the
-// session file it ran in. Names are unique per spawner session and persist on
-// disk, so `subagent_message({ name })` can steer a running subagent or resume
-// a finished one by the same handle — even across a pi restart. The registry
-// lives in the spawner's own artifact dir, which is directly addressable from
-// the spawner's session id (no sessions-tree scan, so resume stays fast).
+// session file it runs in. Names are unique while live and freed on retirement.
+// The registry lives in the spawner's artifact dir; legacy saved handles are
+// retired on restart without deleting historical files.
 
 export interface NameRegistryEntry {
   /** Absolute path to the subagent's session .jsonl file. */
@@ -175,6 +173,17 @@ export function registerName(
   const tmp = `${p}.tmp-${process.pid}-${randomUUID()}`;
   writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf8");
   renameSync(tmp, p);
+}
+
+/** Remove only the mapping still belonging to this child (names may be reused). */
+export function unregisterName(artifactDir: string, name: string, sessionFile: string): void {
+  const registry = readNameRegistry(artifactDir);
+  if (registry[name]?.sessionFile !== sessionFile) return;
+  delete registry[name];
+  const path = nameRegistryPath(artifactDir);
+  const tmp = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf8");
+  renameSync(tmp, path);
 }
 
 function readFirstLine(path: string, maxBytes = 65536): string | null {

@@ -134,23 +134,6 @@ describe("subagent lifecycle", () => {
     assert.equal(agent.messages[0].summary, "Keep working");
     assert.equal(typeof agent.messages[0].timestamp, "number");
   });
-  it("runs legacy initial messages in order without reporting a premature result", async () => {
-    const h = harness();
-    const agent = new Subagent("worker", "worker", "task", "session", true, h.rpc);
-    agent.queueInitialMessages(["/skill:one", "/skill:two"]);
-    h.record({ type: "agent_settled", aborted: false });
-    await tick();
-    assert.equal(agent.live, true);
-    assert.deepEqual(h.commands.map((c) => c.message), ["/skill:one"]);
-    h.record({ type: "agent_settled", aborted: false });
-    await tick();
-    assert.equal(agent.live, true);
-    assert.deepEqual(h.commands.map((c) => c.message), ["/skill:one", "/skill:two"]);
-    h.record({ type: "agent_settled", aborted: false });
-    await h.rpc.closed;
-    await tick();
-    assert.equal(agent.phase, "completed");
-  });
   it("does not treat agent_end as completion, but exits after agent_settled", async () => {
     const h = harness();
     const agent = new Subagent("worker", "worker", "task", "session", true, h.rpc);
@@ -236,11 +219,16 @@ describe("subagent lifecycle", () => {
     let question: string | undefined;
     agent.on("question", (q) => question = q);
     h.record({ type: "entry_appended", entry: { customType: "subagent_question", data: { question: "Which file?" } } });
+    assert.equal(agent.phase, "waiting", "pending tools must show waiting without needing an agent_settled event");
+    assert.equal(agent.activity, "awaiting answer");
     h.record({ type: "agent_settled", aborted: false });
     assert.equal(question, "Which file?");
     assert.equal(agent.phase, "waiting");
     assert.equal(agent.live, true);
     await agent.send("a.ts");
+    h.record({ type: "entry_appended", entry: { customType: "subagent_question_answered", data: {} } });
+    assert.equal(agent.phase, "running");
+    assert.equal(agent.activity, "working");
     h.record({ type: "agent_settled", aborted: false });
     await h.rpc.closed;
     assert.equal(agent.phase, "completed");

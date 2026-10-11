@@ -17,7 +17,7 @@ If the package is already installed in Pi, update its checkout, install its depe
 
 ## Main tab and subagent views
 
-The main conversation has a blue **Subagents** block. It shows up to five recent active agents so a large delegation doesn't fill the terminal. Rows align names, profiles, states, activity, and elapsed time into columns using whitespace, without extra separators. Activity/status and elapsed time form a right-aligned group. Hierarchy arrows and indentation stay intact; long names end in `...` when space is limited. Finished agents leave the block, and the block disappears when no agents remain active. Saved/finished conversations are still accessible through `/subagents` for inspection or follow-up.
+The main conversation has a blue **Subagents** block. It shows up to five recent active agents so a large delegation doesn't fill the terminal. Rows align names, profiles, states, activity, and elapsed time into columns using whitespace, without extra separators. Activity/status and elapsed time form a right-aligned group. Hierarchy arrows and indentation stay intact; long names end in `...` when space is limited. Finished agents leave the block, and the block disappears when no agents remain active. Closed agents are removed from the selector, session list and name registry after their outcome is delivered. Only live conversations remain accessible through `/subagents`.
 
 - Click a row in the block to open that agent in **fullscreen terminal mode**.
 - Use **Ctrl+Alt+G** or `/subagents` to select an agent with the keyboard.
@@ -54,7 +54,7 @@ Every conversation uses the same fullscreen view and **Return to main agent** al
 - Recoverable tool failures, provider retry attempts, compaction errors, and child extension diagnostics stay inside the child. They neither dismiss its view nor create main-chat/context messages. Successful recovery produces only the final result.
 - A terminal child failure returns to main and reports once as plain red **Error:** text; it does not also send a duplicate result. Terminal failures remain available to the delegating agent. Legacy `subagent_error` messages without terminal-failure metadata are excluded from future orchestrator context, without deleting saved history.
 - Viewer/dialog/control failures restore the main UI and show a plain red error notification through non-context custom session entries, not `sendMessage()`.
-- Finished descendants retain their saved sessions and loadouts. Resuming one from the root starts it as a directly owned background agent; it does not revive a dead ancestor.
+- Closed descendants are retired from the hierarchy too. Their saved files are retained by default; only their owning process may perform opt-in file deletion.
 
 Mouse interaction is supported by Pi's fullscreen mode. Keyboard navigation also works in regular mode. Tool images follow Pi's native terminal-capability and image settings. The only extension-specific conversation decoration is the blue subagent information/return block.
 
@@ -72,7 +72,7 @@ Only these extension-generated messages go to the **delegating agent's** model c
 
 Streaming text, thinking, child tool arguments/results, retry diagnostics, widget updates, dialogs, usage statistics, and navigation do not get copied into main context. The root can display descendant results/questions/failures, but those are non-context `subagent_ui` session entries; the descendant's actual owner receives its model-facing notification. Message `details` (session paths, stats, ownership metadata) are not included in Pi's LLM conversion of custom messages.
 
-Legacy internal-error and duplicate descendant notifications are filtered before normal model requests, compaction, and branch summaries. Saved history is not deleted. Previously generated compaction summaries or observations may already contain old diagnostics; this cannot be safely reversed by a message filter. Third-party extensions that independently summarize raw saved entries must honor the same non-context boundary themselves.
+Legacy internal-error and duplicate descendant notifications are filtered before normal model requests, compaction, and branch summaries. Context filtering does not rewrite saved history. Optional lifecycle cleanup can delete closed children's files, but never the parent conversation. Previously generated compaction summaries or observations may already contain old diagnostics; this cannot be safely reversed by a message filter. Third-party extensions that independently summarize raw saved entries must honor the same non-context boundary themselves.
 
 ### Native rendering and layout extensions
 
@@ -97,7 +97,7 @@ Task extensions still execute in the child with its saved profile/tool permissio
 The main agent receives:
 
 - **subagent** — launch a profile in the background. `agent` chooses the profile; `name` is an optional unique follow-up handle. `task` is required. Optional `model` and `cwd` overrides are supported.
-- **subagent_message** — send a follow-up to a live child or resume a finished child by name with its saved conversation and tool loadout.
+- **subagent_message** — answer a pending question or send a follow-up to a live child by name. Closed children cannot be resumed; spawn a fresh child for more work.
 - **subagents_list** — list available profiles and effective models. Results arrive automatically; polling is unnecessary.
 
 Example:
@@ -148,7 +148,7 @@ Supported fields:
 | `interactive` | Suppresses stall/recovery messages to the orchestrator; defaults to the inverse of `auto-exit` |
 | `session-mode` | `standalone` (default), `lineage-only`, or `fork` |
 | `cwd` | Working directory; relative profile paths resolve from the Pi agent directory |
-| `skills` or `skill` | Comma-separated skill names; preserve the original CLI message order and let Pi expand the child's skill commands |
+| `skills` or `skill` | Comma-separated skill names; combine their instructions and the task into one initial RPC prompt |
 | `subagent_agents` | Profiles this child may delegate to; grants the spawning tools |
 | `disable-model-invocation: true` | Manual launch through `/subagent` only |
 
@@ -169,7 +169,7 @@ Restricted children disable extension discovery and MCP, then explicitly reload 
 );
 ```
 
-The same snapshot is replayed on resume. A missing or malformed snapshot is refused rather than silently launching an unrestricted child. A custom model provider supplied by an extension may also need to be explicitly loaded in the child; a tool whitelist alone does not discover provider-only extensions.
+The snapshot records the child's sandbox for diagnostics. Automatic named resume is no longer supported after a child closes. A custom model provider supplied by an extension may also need to be explicitly loaded in the child; a tool whitelist alone does not discover provider-only extensions.
 
 ## Model configuration
 
@@ -178,6 +178,7 @@ Selections are stored in `<Pi agent directory>/subagents.json`, respecting `PI_C
 ```json
 {
   "status": { "enabled": true },
+  "cleanup": { "deleteSessionFiles": false },
   "models": {
     "default": "inherit",
     "thinking": "medium",
@@ -190,9 +191,9 @@ Selections are stored in `<Pi agent directory>/subagents.json`, respecting `PI_C
 }
 ```
 
-Resolution: per-agent config → explicit spawn model → global config default → profile model. `inherit` follows the parent's active model, including on resume. Thinking levels are clamped to model capabilities when validation is enabled. Fallback policies are `inherit`, `default`, or `fail`.
+Resolution: per-agent config → explicit spawn model → global config default → profile model. `inherit` follows the parent's active model, at launch. Thinking levels are clamped to model capabilities when validation is enabled. Fallback policies are `inherit`, `default`, or `fail`.
 
-Without a `models` section, profile defaults are preserved. The old package-root `config.json` is still readable for migration; new selections are written to the durable agent directory. `status.enabled` retains its original meaning: it enables detailed activity/status rendering and stall/recovery notifications. It defaults to true in the shipped configuration. Interactive agents still show status but do not wake their orchestrator on stalls/recovery; resumed sessions are always autonomous. The original 60-second stall classifier and four-line notification cap are retained, using RPC health observations instead of activity files.
+Without a `models` section, profile defaults are preserved. The old package-root `config.json` is still readable for migration; new selections are written to the durable agent directory. `status.enabled` retains its original meaning: it enables detailed activity/status rendering and stall/recovery notifications. It defaults to true in the shipped configuration. Interactive agents still show status but do not wake their orchestrator on stalls/recovery. The original 60-second stall classifier and four-line notification cap are retained, using RPC health observations instead of activity files.
 
 ## Sessions and lifecycle
 
@@ -200,7 +201,11 @@ Agents run as isolated background processes. Conversation updates and controls a
 
 Completion waits for **agent_settled**, not `agent_end`, because retries, compaction, and queued work can continue after an agent run ends. On normal completion the child stdin closes so Pi can flush its session and shut down. Cancellation clears queued work before aborting, then closes stdin. A bounded kill fallback handles unresponsive processes.
 
-Shutdown, session replacement, and `/reload` close the selected view, dispose its input listeners, and stop owned background children. No result is sent into a disposed parent session. Session files, loadout snapshots, and name registries persist, so finished conversations can be inspected or resumed after restart.
+After a child's process has closed and its final outcome is queued to its parent, it is removed from memory, the selector, the session list and the name registry. Completion, cancellation and terminal failure all retire the handle; names can be reused for fresh sessions. Final summaries and statistics remain in the parent's conversation. Live children waiting for answers or nested work are not retired. `auto-exit: false` sessions remain live until explicitly stopped.
+
+By default saved child sessions/loadouts/artifacts remain on disk for manual inspection, but do not appear in `/subagents` and cannot be resumed through `subagent_message`. Set `cleanup.deleteSessionFiles: true` in `subagents.json` to delete newly retired, owned children's session files, loadouts, private session-artifact directories and generated profile-prompt files. Project files, parent history and sibling sessions are never cleanup targets. Observer copies only retire their local handles; the child's real owner manages file deletion.
+
+Shutdown, session replacement, and `/reload` close the selected view, dispose its input listeners, and stop owned background children. No result is sent into a disposed parent session; files are retained on that shutdown path. On restart, legacy saved registry handles are retired without retroactively deleting their files. Cleanup does not rewrite previous results or summaries.
 
 ## Development and verification
 
@@ -210,7 +215,7 @@ npm run test:integration
 npm run typecheck
 ```
 
-Unit and integration tests cover streaming, nested delegation, cancellation/crashes, dialogs, saved sessions, resume, native rendering, and model-context isolation. Real Pi-runtime tests verify extension loading and that UI-only notifications do not enter model messages, without provider credentials.
+Unit and integration tests cover streaming, nested delegation, cancellation/crashes, dialogs, ephemeral lifecycle/file cleanup, native rendering, and model-context isolation. Real Pi-runtime tests verify extension loading and that UI-only notifications do not enter model messages, without provider credentials.
 
 Automated tests are not a substitute for a manual live-provider and interactive-terminal check.
 
@@ -229,15 +234,19 @@ Automated tests are not a substitute for a manual live-provider and interactive-
 
 ### Retained from the original
 
-Agent profiles, tool permissions, named delegation and follow-ups, model/thinking selection, questions to the delegating agent, saved conversations, and resume remain available.
+Agent profiles, tool permissions, named delegation and follow-ups, model/thinking selection, questions to the delegating agent, retained final summaries remain available. Closed children are now ephemeral handles, not resumable entries.
 
-The agent-facing tool schemas, descriptions, guidance, acknowledgements, task wrappers, and question/result/failure templates are restored from the last Psmux revision (`d521b48`). Historical pane terminology in these model-facing strings is deliberately preserved. Terminal failures again use the `subagent_result` contract; red error styling is a rendering decision, not a new message protocol. The original task-file handoff and skill-command ordering are also retained. Golden baseline tests guard against accidental wording/schema changes.
+The agent-facing contract combines the concise post-removal RPC structure (`e1f5343`) with the original contract's essential orchestration safeguards. Launch acknowledgements are not results: do not invent outcomes or poll status/logs. Assign bounded, context-saving tasks and request concise evidence. For a focused blocking decision, call `ask_question`: the tool stays pending until the parent replies, so the child cannot make another model-generation request while waiting. The parent still replies with `subagent_message`; that input is consumed once and returned as the question's tool result, rather than being queued as an additional user turn. The child then continues with the answer in context. Cancellation/shutdown releases the wait. Other tool calls already running in the same parallel batch may finish; thinking before the model actually calls `ask_question` is not covered by this pause.
 
-UI diagnostics and observer copies remain non-context entries. This prevents backend/view implementation details from appearing as additional instructions or duplicated outcomes in a resumed agent conversation.
+Tasks and optional skill instructions arrive in one initial RPC prompt, without historical multiplexer/pane instructions or task-file handoffs. `subagent_message` uses the same name to answer a question or steer a live child, with distinct acknowledgements. Closed children are removed; follow-up work requires a new spawn. Steering during a response queues for a turn boundary rather than interrupting it. Non-auto-exiting profiles stay open after a turn and do not guarantee per-turn completion notifications. `subagents_list` returns profiles and session status as JSON. Terminal failures use `subagent_error`; normal completion/cancellation use `subagent_result`. Tests preserve the RPC schemas and guard the hybrid guidance and delivery promises.
+
+The latest dense, context-saving profile descriptions, Psmux-compatible configuration defaults/validation, native UI and compaction fixes remain. This contract switch does not restore duplicate tool-error cards or change ordinary main-chat tool rendering.
+
+UI diagnostics and observer copies remain non-context entries. This prevents backend/view implementation details from appearing as additional instructions or duplicated outcomes in an agent conversation.
 
 ### Compatibility changes
 
 - Uses the current `@earendil-works` Pi packages.
 - Pi-only agent profiles; the previous Claude integration was removed.
 - Original configuration names, model precedence/fallback, profile `interactive`/`auto-exit` defaults, and `status.enabled` remain supported. `PI_SUBAGENT_SHELL_READY_DELAY_MS` retains its original parsing and 500 ms default, applied as a startup-readiness delay after the RPC handshake.
-- Existing saved Pi sessions/loadouts/name registries remain usable, but old live multiplexer tabs cannot be reattached.
+- Existing saved Pi files remain on disk for manual inspection, but legacy name registries are retired on restart. Old live multiplexer tabs cannot be reattached.

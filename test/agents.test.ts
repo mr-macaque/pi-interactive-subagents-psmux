@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAgentDefinitions } from "../pi-extension/subagents/agents.ts";
-import { buildInitialPrompts } from "../pi-extension/subagents/prompts.ts";
+import { buildTaskWithSkills } from "../pi-extension/subagents/prompts.ts";
 
 it("discovers package/global/project profiles with correct priority and CRLF parsing", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-profiles-"));
@@ -39,7 +39,7 @@ it("discovers package/global/project profiles with correct priority and CRLF par
   }
 });
 
-it("preserves the old CLI skill/task message order and delegates skill expansion to Pi", () => {
+it("combines skill instructions and the task into one initial RPC prompt",  () => {
   const root = mkdtempSync(join(tmpdir(), "pi-skills-"));
   try {
     const first = join(root, "one.md");
@@ -50,9 +50,13 @@ it("preserves the old CLI skill/task message order and delegates skill expansion
       { name: "skill:one", source: "skill", sourceInfo: { path: first } },
       { name: "skill:two", source: "skill", sourceInfo: { path: second } },
     ];
-    assert.deepEqual(buildInitialPrompts("Do the task", "one,two", commands, true), ["Do the task", "/skill:one", "/skill:two"]);
-    assert.deepEqual(buildInitialPrompts("Do the task", "one,two", commands, false), ["/skill:one", "/skill:two", "Do the task"]);
-    assert.deepEqual(buildInitialPrompts("task", undefined, [], false), ["task"]);
-    assert.throws(() => buildInitialPrompts("task", "missing", commands, false), /not available/);
+    const prompt = buildTaskWithSkills("Do the task", "one,two", commands);
+    assert.ok(prompt.includes("First instructions"));
+    assert.ok(prompt.includes("Second instructions"));
+    assert.ok(prompt.endsWith("Do the task"));
+    assert.ok(!prompt.includes("description: first"));
+    assert.ok(prompt.includes(root));
+    assert.equal(buildTaskWithSkills("task", undefined, []), "task");
+    assert.throws(() => buildTaskWithSkills("task", "missing", commands), /not available/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

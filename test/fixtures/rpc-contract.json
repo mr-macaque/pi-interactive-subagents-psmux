@@ -1,0 +1,80 @@
+{
+  "revision": "e1f5343",
+  "tools": {
+    "subagent": {
+      "label": "Subagent",
+      "description": "Launch an isolated Pi subagent in the background. Results arrive automatically; do not poll. The user can open it inside the main tab.",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "agent",
+          "task"
+        ],
+        "properties": {
+          "agent": {
+            "description": "Agent profile to launch (worker, scout, researcher, or a custom profile).",
+            "type": "string"
+          },
+          "task": {
+            "description": "Task for the subagent.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique display name and persistent follow-up handle.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Model override, subject to /subagent-model configuration.",
+            "type": "string"
+          },
+          "cwd": {
+            "description": "Working directory; relative paths resolve from the parent cwd.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "subagent_message": {
+      "label": "Message Subagent",
+      "description": "Send a message to a live subagent, or resume a finished subagent's saved session with its original profile and tools.",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "name",
+          "message"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "subagents_list": {
+      "label": "List Subagents",
+      "description": "List available profiles and spawned agents. Not needed to poll for results.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "ask_question": {
+      "label": "Ask Parent",
+      "description": "Ask the parent agent a question when you need a decision. After calling, stop your turn and wait for its reply.",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

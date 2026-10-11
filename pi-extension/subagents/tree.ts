@@ -72,7 +72,7 @@ export class RemoteConnection extends EventEmitter implements AgentConnection {
 /** Each hop relays structured events upward and routes user controls downward. */
 export class TreeBridge {
   readonly hasParent = !!process.env.PI_SUBAGENT_ID && typeof process.send === "function";
-  private subscriptions: (() => void)[] = [];
+  private subscriptions = new Map<Subagent, () => void>();
   private queue: { packet: any; source?: PiRpc }[] = [];
   private paused = new Map<PiRpc, number>();
   private sending = false;
@@ -110,13 +110,21 @@ export class TreeBridge {
         void agent.fail(new Error(`Subagent tree protocol error: ${String(error)}`)).catch(this.onError);
       }
     };
-    const finished = () => this.send({ channel: TREE_CHANNEL, kind: "closed", route: [agent.id], result: {
-      code: agent.phase === "failed" ? 1 : 0, phase: agent.phase, error: agent.error,
-    } });
+    const finished = () => {
+      this.send({ channel: TREE_CHANNEL, kind: "closed", route: [agent.id], result: {
+        code: agent.phase === "failed" ? 1 : 0, phase: agent.phase, error: agent.error,
+      } });
+      this.disconnect(agent);
+    };
     if (this.hasParent) rpc.on("record", record);
     rpc.on("tree", tree);
     agent.once("finished", finished);
-    this.subscriptions.push(() => { rpc.off("record", record); rpc.off("tree", tree); agent.off("finished", finished); });
+    this.subscriptions.set(agent, () => { rpc.off("record", record); rpc.off("tree", tree); agent.off("finished", finished); });
+  }
+
+  disconnect(agent: Subagent) {
+    this.subscriptions.get(agent)?.();
+    this.subscriptions.delete(agent);
   }
 
   fault(agent: Subagent | undefined, error: string) {
@@ -167,8 +175,8 @@ export class TreeBridge {
   }
   async dispose() {
     process.off("message", this.command);
-    for (const remove of this.subscriptions) remove();
-    this.subscriptions = [];
+    for (const remove of this.subscriptions.values()) remove();
+    this.subscriptions.clear();
     // Let final descendant states reach the root before Pi exits this process.
     const deadline = Date.now() + 1000;
     while ((this.sending || this.queue.length) && process.connected && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
