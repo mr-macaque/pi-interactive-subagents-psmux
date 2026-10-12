@@ -64,7 +64,7 @@ function applySandboxToParts(parts: string[], loadout: SubagentLoadout, opts: { 
     parts.push(loadout.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", path);
   }
   if (loadout.toolAllowlist) {
-    parts.push("--no-extensions", "--no-mcp", "--tools", loadout.toolAllowlist);
+    parts.push("--no-extensions", "--no-mcp", "--tools", loadout.toolAllowlist, "--extension", "npm:pi-multi-account");
     const paths = new Set<string>();
     for (const tool of loadout.toolAllowlist.split(",")) {
       const path = getToolExtensionPath(tool);
